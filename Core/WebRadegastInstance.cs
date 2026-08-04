@@ -2170,15 +2170,15 @@ namespace RadegastWeb.Core
             {
                 // Update the AccountInfo.CurrentRegion immediately for in-memory access
                 AccountInfo.CurrentRegion = _client.Network.CurrentSim.Name;
-                
-                // Use the total avatar count from the sim, which includes all avatars
-                // regardless of draw distance, similar to how Radegast's radar works
-                var totalAvatarCount = _client.Network.CurrentSim.ObjectsAvatars.Count;
+
+                // Keep the status-line people count aligned with radar unique avatars,
+                // then include our own avatar (+1) as requested.
+                var totalAvatarCount = GetUniqueAvatarCount() + 1;
                 
                 var regionInfo = new RegionInfoDto
                 {
                     Name = _client.Network.CurrentSim.Name,
-                    AvatarCount = totalAvatarCount, // This includes self and all other avatars
+                    AvatarCount = totalAvatarCount,
                     AccountId = Guid.Parse(_accountId),
                     RegionX = _client.Network.CurrentSim.Handle >> 32,
                     RegionY = _client.Network.CurrentSim.Handle & 0xFFFFFFFF
