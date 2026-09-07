@@ -735,6 +735,13 @@ namespace RadegastWeb.Services
         private readonly ILogger _logger;
         private const string SkipAiResponseKey = "SkipAiResponse";
 
+        // Group messages are delivered independently to every connected account that is a member of the
+        // group, so this processor can run once per account for the exact same message. Track recently
+        // handled commands (by session + sender + text) so only the first account to see it executes the
+        // teleport, avoiding duplicate lures when multiple bots share a group.
+        private static readonly ConcurrentDictionary<string, DateTime> _recentlyHandledCommands = new();
+        private static readonly TimeSpan DedupeWindow = TimeSpan.FromSeconds(5);
+
         public GroupTeleportCommandProcessor(IServiceProvider serviceProvider, ILogger logger)
         {
             _serviceProvider = serviceProvider;
@@ -803,6 +810,22 @@ namespace RadegastWeb.Services
                         return ChatProcessingResult.CreateSuccess();
                     }
 
+                    // De-duplicate: the same group message can arrive more than once (e.g. once
+                    // classified as a plain IM before the group session is recognized, then again
+                    // as the proper group message), and the same message is also delivered
+                    // independently to every member account. Guard on requester + matched target
+                    // account rather than session/message text so all of these collapse to one lure.
+                    var dedupeKey = $"{message.SenderId}|{accountToUse.Id}|{requestedToken}";
+                    PruneExpiredCommandEntries();
+                    if (!_recentlyHandledCommands.TryAdd(dedupeKey, DateTime.UtcNow))
+                    {
+                        _logger.LogDebug(
+                            "Skipping duplicate teleport command '{RequestedToken}' from {SenderName} ({SenderId}) - already handled recently",
+                            requestedToken, message.SenderName, message.SenderId);
+                        context.SharedData[SkipAiResponseKey] = true;
+                        return ChatProcessingResult.CreateSuccess();
+                    }
+
                     // Send the teleport lure
                     var success = await accountService.SendTeleportLureAsync(
                         accountToUse.Id, 
@@ -833,6 +856,18 @@ namespace RadegastWeb.Services
                 _logger.LogError(ex, "Error processing group teleport command for message from {SenderName}", 
                     message.SenderName);
                 return ChatProcessingResult.CreateSuccess(); // Continue processing on error
+            }
+        }
+
+        private static void PruneExpiredCommandEntries()
+        {
+            var cutoff = DateTime.UtcNow - DedupeWindow;
+            foreach (var kvp in _recentlyHandledCommands)
+            {
+                if (kvp.Value < cutoff)
+                {
+                    _recentlyHandledCommands.TryRemove(kvp.Key, out _);
+                }
             }
         }
 
